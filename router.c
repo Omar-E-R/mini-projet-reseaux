@@ -144,7 +144,7 @@ void init_routing_table(routing_table_t *rt) {
 
     overlay_addr_t me;
     init_node(&me, MY_ID, LOCALHOST);
-    printf("Adding route\n");
+    // printf("Adding route\n");
     add_route(rt, MY_ID, &me, 0);
 }
 
@@ -231,14 +231,45 @@ void build_dv_packet(packet_ctrl_t *p, routing_table_t *rt) {
 // this neighbour
 void build_dv_specific(packet_ctrl_t *p, routing_table_t *rt, node_id_t neigh) {
 
-    /* TODO */
+    p->dv_size=rt->size;
+    p->type=CTRL;
+    p->src_id=MY_ID;
+    for (int i = 0; i < rt->size; i++){
+        if(rt->tab[i].dest!=neigh && rt->tab[i].nexthop.id!=neigh){
+            p->dv[i].dest=rt->tab[i].dest;
+            p->dv[i].metric=rt->tab[i].metric;
+        }
+    }
 }
 
 
 // Remove old RT entries
 void remove_obsolete_entries(routing_table_t *rt) {
+    int size= rt->size;
+    //New entries array that will only contain none absolete entries
+    int newSize= 0;
+    routing_table_entry_t newTab[MAX_ROUTES];
+    for ( int i = 0; i<size; i++){
+        if (difftime(time(NULL),rt->tab[i].time)> BROADCAST_PERIOD){
+            if(rt->tab[i].dest == rt->tab[i].nexthop.id && rt->tab[i].metric==0){//IF dest and nextHop are the same But the metrics is > 0 => OBSOLETE
+                newTab[newSize]= rt->tab[i];
+                newSize++;
+            }else{
+                //This is Used only for debugging
+                // printf("Deleted entry %d\n", rt->tab[i].dest);
+            }
+        }else{
+            newTab[newSize]= rt->tab[i];
+            newSize++;
+        }
 
-    /* TODO */
+    }
+    //Replace old entries in the routing table with the new entries after all obsolete entries have been removed
+    rt->size=newSize;
+    for (int i = 0; i < newSize; i++){
+        rt->tab[i]=newTab[i];
+    }
+
 }
 
 // Hello thread to broadcast state to neighbors
@@ -254,9 +285,15 @@ void *hello(void *args) {
     /*-----------------------------*/
 
     while (1) {
-        build_dv_packet(&pctrl, pargs->rt);
+        // build_dv_packet(&pctrl, pargs->rt);
+        for (int i = 0; i < pargs->nt->size; i++)
+        {
+            build_dv_specific(&pctrl, pargs->rt, pargs->nt->tab[i].id);
+        }
+
         for (int i = 0; i < pargs->nt->size;    i++)
         {
+
             int sock_id;
             int port = pargs->nt->tab[i].port;
             char ip[16];
@@ -276,10 +313,9 @@ void *hello(void *args) {
             /*-----------------------------------------*/
             memset(&neigh_adr, 0, sizeof(neigh_adr));
             neigh_adr.sin_family = AF_INET;
-            neigh_adr.sin_port = htons(port); // htons: host to net byte order (short int)
+                neigh_adr.sin_port = htons(port); // htons: host to net byte order (short int)
             neigh_adr.sin_addr.s_addr = inet_addr(ip);
-
-            /* Envoi du message au neighbor */
+                /* Envoi du message au neighbor */
             /*-----------------------------*/
             if ((sendto(sock_id, &pctrl, sizeof(pctrl), 0, (struct sockaddr *)&neigh_adr, sizeof(neigh_adr))) < 0)
             {
@@ -309,18 +345,21 @@ void *hello(void *args) {
 // Update routing table from received distance vector
 int update_rt(routing_table_t *rt, overlay_addr_t *src, dv_entry_t dv[], int dv_size) {
     int existe_pas=1;
-    for (int i = 0; i < dv_size && existe_pas; i++){
-        for (int j = 0; j < rt->size; j++){
+    for (int i = 0; i < dv_size ; i++){
+        existe_pas=1;
+        for (int j = 0; j < rt->size && existe_pas ; j++){
             if(rt->tab[j].dest==dv[i].dest){
-                if (rt->tab[j].metric > dv[i].metric + 1 || strcmp(rt->tab[j].nexthop.ipv4, src->ipv4) == 0){
-                    rt->tab[j].metric=dv[i].metric;
+                if (rt->tab[j].metric > dv[i].metric + 1 || rt->tab[j].nexthop.id == src->id){
+                    rt->tab[j].metric=dv[i].metric + 1;
+                    rt->tab[j].time=time(NULL);
+                    rt->tab[j].nexthop=*src;
                 }
                 existe_pas=0;
             }
         }
         if(existe_pas){
-            printf("Adding route\n");
-            add_route(rt, dv[i].dest, src, dv[i].metric);
+            // printf("Adding route\n");
+            add_route(rt, dv[i].dest, src, dv[i].metric + 1);
         }
     }
 
